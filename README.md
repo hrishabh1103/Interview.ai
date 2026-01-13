@@ -1,77 +1,68 @@
-# Interviewer.AI
+# Interviewer.AI 🤖🎤
 
-A production-quality MVP for simulating resume-based interviews with AI.
+An AI-powered mock interview platform that conducts real-time technical interviews, evaluates your responses, and generates detailed performance reports with PDF export.
 
 ## Features
-- **Resume Parsing**: Upload a PDF to generate context-aware questions.
-- **AI Interviewer**: Text-based chat with a persona customized to the role.
-- **Live Scoring**: Real-time evaluation of answers on Correctness, Depth, Structure, and Communication.
-- **Comprehensive Report**: Downloadable PDF report with strengths, weaknesses, and a 7-day improvement plan.
-- **Voice Mode (Beta)**: Push-to-talk integration (requires Google Cloud credentials).
+
+*   **AI Interviewer**: Conducts dynamic, context-aware technical interviews using LLMs (Gemini or Ollama).
+*   **Voice Mode** 🗣️: 
+    *   **High-Quality TTS**: AI speaks with natural "Neural" voices (via Microsoft Edge TTS).
+    *   **Browser-Native STT**: Speak your answers using the browser's built-in dictation (no API keys required).
+*   **Live Scoreboard** 📊: Real-time feedback on Correctness, Depth, Structure, and Communication.
+*   **PDF Reports** 📄: Download extensive performance reviews with actionable feedback.
+*   **Resume Analysis**: Upload your resume to get tailored questions.
 
 ## Tech Stack
-- **Frontend**: Next.js 14, Tailwind CSS, Shadcn UI
-- **Backend**: FastAPI, LangGraph, Google Gemini, SQLite (Default)/Postgres
-- **Infrastructure**: Docker Compose
 
-## Requirements
-- Docker & Docker Compose
-- Google Gemini API Key
+*   **Backend**: Python, FastAPI, LangGraph, LangChain, FPDF2, Edge-TTS.
+*   **Frontend**: Next.js (React), Tailwind CSS, Lucide Icons.
+*   **AI Models**: Google Gemini (Cloud) or Ollama (Local).
 
-## Setup
+## Setup & Run
 
-1. **Clone the repository**
-2. **Environment Variables**
-   Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` and valid `GOOGLE_API_KEY`.
-   Optionally add `GOOGLE_APPLICATION_CREDENTIALS` json path for Voice Mode.
+### Prerequisites
+*   Node.js & npm
+*   Python 3.11+
+*   Google Gemini API Key (or local Ollama setup)
 
-3. **Run with Docker**
-   ```bash
-   docker-compose up --build
-   ```
-   - Frontend: http://localhost:3000
-   - Backend: http://localhost:8000
-   - Docs: http://localhost:8000/docs
+### 1. Backend
 
-## Development
-
-### Backend (Local)
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+
+# Create .env file
+cp ../.env.example .env
+# Edit .env and add your GEMINI_API_KEY
 ```
 
-### Frontend (Local)
+Run the server:
+```bash
+uvicorn app.main:app --reload
+```
+Server runs at `http://localhost:8000`.
+
+### 2. Frontend
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+App runs at `http://localhost:3000`.
 
-## Testing Milestone 1 (Text-only)
-1. Go to `http://localhost:3000`.
-2. Click "Start Interview".
-3. Upload `sample_resume.pdf` (provided in root) or your own.
-4. Select "SDE1" / "Easy" / "5 Questions".
-5. Enter text answers in the chat.
-6. Verify live scoreboard updates.
-7. After 5 questions, click "View Results" or check the report.
-8. Download the PDF report.
+## Configuration (.env)
 
-## Directory Structure
-- `/backend`: FastAPI app
-  - `/app/graph.py`: LangGraph logic
-  - `/app/services`: PDF, Voice, LLM services
-- `/frontend`: Next.js app
-  - `/app/interview`: Chat interface
-  - `/app/report`: Report visualization
-# Interview.ai
-# Interview.ai
-# Interview.ai
+| Variable | Description |
+| :--- | :--- |
+| `GEMINI_API_KEY` | Your Google AI API Key (Required for Gemini) |
+| `LLM_PROVIDER` | `google` (default) or `ollama` |
+| `OLLAMA_BASE_URL` | URL for local Ollama (e.g. `http://localhost:11434`) |
+
+## How to Use Voice Mode
+1.  Ensure backend is running.
+2.  On the Interview screen, you'll see a **"Voice Mode Active"** indicator.
+3.  The AI will automatically speak its questions.
+4.  Click the **"Speak"** button (microphone icon) to dictate your answer.
