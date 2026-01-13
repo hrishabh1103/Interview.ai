@@ -80,11 +80,21 @@ export async function getVoiceStatus(): Promise<boolean> {
     }
 }
 
-export async function synthesizeSpeech(text: string): Promise<Blob> {
+export async function getVoiceOptions(): Promise<import("@/types").VoiceOption[]> {
+    const res = await fetch(`${API_URL}/voice/options`);
+    if (!res.ok) return [];
+    return res.json();
+}
+
+export async function synthesizeSpeech(text: string, voiceName?: string, rate?: string): Promise<Blob> {
     const res = await fetch(`${API_URL}/speech/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({
+            text,
+            voice: voiceName,
+            rate: rate
+        })
     });
 
     if (!res.ok) {

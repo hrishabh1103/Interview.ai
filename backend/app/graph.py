@@ -1,10 +1,11 @@
-from typing import Dict, Any, List, TypedDict, Optional
+from typing import Dict, Any, List, TypedDict, Optional, Literal
 from langgraph.graph import StateGraph, END
 from .models import ResumeSummary, Question, Evaluation, FinalReport, RoleEnum, DifficultyEnum
 from .llm import llm_client
 from .prompts.templates import (
     SUMMARIZE_SYSTEM_PROMPT, SUMMARIZE_USER_PROMPT,
     GENERATE_QUESTION_SYSTEM_PROMPT, GENERATE_QUESTION_USER_PROMPT,
+    GENERATE_FOLLOWUP_SYSTEM_PROMPT, GENERATE_FOLLOWUP_USER_PROMPT,
     EVALUATE_ANSWER_SYSTEM_PROMPT, EVALUATE_ANSWER_USER_PROMPT,
     REPORT_SYSTEM_PROMPT, REPORT_USER_PROMPT
 )
@@ -22,7 +23,14 @@ class InterviewState(TypedDict):
     eval_history: List[Dict] # serialized Evaluation
     
     current_question: Optional[Dict] # serialized Question
-    current_step: int # question counter
+    current_step: int # Legacy counter, synced to main questions
+    
+    # New Fields for Logic
+    transcript: List[Dict] # {role: "interviewer"|"candidate", text: str}
+    asked_main_questions: int
+    followup_count_for_current: int
+    max_followups_per_question: int
+    pending_followup: Optional[Dict] # serialized Question
     
     final_report: Optional[Dict] # serialized FinalReport
     
@@ -42,22 +50,32 @@ def node_summarize_resume(state: InterviewState) -> InterviewState:
     )
     
     state["resume_summary"] = summary.model_dump()
+    # Init new fields if missing
+    state.setdefault("transcript", [])
+    state.setdefault("asked_main_questions", 0)
+    state.setdefault("followup_count_for_current", 0)
+    state.setdefault("max_followups_per_question", 1) # Cap at 1 follow-up per main question
+    state.setdefault("question_history", [])
+    state.setdefault("answer_history", [])
+    state.setdefault("eval_history", [])
     return state
 
-def node_generate_question(state: InterviewState) -> InterviewState:
-    print("--- Node: Generate Question ---")
-    idx = state.get("current_step", 1)
+def node_generate_main_question(state: InterviewState) -> InterviewState:
+    print("--- Node: Generate Main Question ---")
     
-    # Determine topic based on index/random/logic
-    # For MVP: simple round robin or random logic implied in prompt
-    current_topic = "General/Projects"
-    if idx > 1:
-        current_topic = "Technical Deep Dive"
+    # Prepare history for context
+    transcript_text = ""
+    for turn in state.get("transcript", [])[-6:]: # Last 3ish QA pairs
+        transcript_text += f"{turn['role'].upper()}: {turn['text']}\n"
     
-    q_hist = [q['text'] for q in state.get("question_history", [])]
     summary_dict = state.get("resume_summary", {})
+    idx = state.get("asked_main_questions", 0) + 1
     
-    # Generate
+    # Topic Logic
+    current_topic = "General/Intro"
+    if idx > 1: current_topic = "Technical Deep Dive"
+    if idx > 3: current_topic = "System Design / Architecture"
+    
     question = llm_client.generate_structured(
         system_prompt=GENERATE_QUESTION_SYSTEM_PROMPT.format(
             role=state["role"],
@@ -66,21 +84,61 @@ def node_generate_question(state: InterviewState) -> InterviewState:
         ),
         user_prompt=GENERATE_QUESTION_USER_PROMPT.format(
             resume_summary=str(summary_dict),
-            question_history=str(q_hist),
+            transcript_history=transcript_text,
             question_index=idx
         ),
         response_model=Question
     )
     
-    # Force ID consistency or logic
     question.id = f"q_{idx}"
+    question.kind = "main"
     
     state["current_question"] = question.model_dump()
-    # We don't append to history yet; we wait until answered or we can append now.
-    # Usually we append now to show "asked".
+    state["asked_main_questions"] = idx
+    state["followup_count_for_current"] = 0 # Reset for new main question
+    state["current_step"] = idx # Sync legacy
     
-    # If we append now, we must be careful not to duplicate if we cycle back.
-    # But usually we move to WAIT_FOR_INPUT state after this.
+    # Add to transcript
+    tr = state.get("transcript", [])
+    tr.append({"role": "interviewer", "text": question.text})
+    state["transcript"] = tr
+    
+    return state
+
+def node_generate_followup(state: InterviewState) -> InterviewState:
+    print("--- Node: Generate Follow-up ---")
+    
+    # Context
+    last_q = state.get("current_question")
+    last_ans = state.get("answer_history", [])[-1]
+    last_eval = state.get("eval_history", [])[-1]
+    
+    question = llm_client.generate_structured(
+        system_prompt=GENERATE_FOLLOWUP_SYSTEM_PROMPT,
+        user_prompt=GENERATE_FOLLOWUP_USER_PROMPT.format(
+            original_question=last_q['text'],
+            last_answer=last_ans['text'],
+            feedback=last_eval['feedback_text'],
+            missing_points=str(last_eval.get('missing_points', []))
+        ),
+        response_model=Question
+    )
+    
+    # ID logic: q_1_f1
+    # ensure we don't nest IDs too deep q_1_f1_f1 if we allowed multiple chains
+    parent_id = last_q['id'].split('_f')[0] 
+    f_idx = state.get("followup_count_for_current", 0) + 1
+    question.id = f"{parent_id}_f{f_idx}"
+    question.kind = "followup"
+    question.topic = last_q['topic']
+    
+    state["current_question"] = question.model_dump()
+    state["followup_count_for_current"] = f_idx
+    
+    # Add to transcript
+    tr = state.get("transcript", [])
+    tr.append({"role": "interviewer", "text": question.text})
+    state["transcript"] = tr
     
     return state
 
@@ -88,65 +146,45 @@ def node_evaluate_answer(state: InterviewState) -> InterviewState:
     print("--- Node: Evaluate Answer ---")
     cur_q = state.get("current_question")
     # The answer should have been injected into state['answer_history'] mostly recently 
-    # OR passed in via some transient input.
-    # LangGraph state persists, so we assume the API handler appended the user's answer to answer_history 
-    # BEFORE invoking the graph runner for this step.
-    
     last_answer = state["answer_history"][-1]
     
+    # Add candidate answer to transcript if not already last item
+    transcript = state.get("transcript", [])
+    if not transcript or transcript[-1]['role'] != "candidate":
+         transcript.append({"role": "candidate", "text": last_answer['text']})
+         state["transcript"] = transcript
+    else:
+         # Update text if it was placeholder? (Unlikely)
+         pass
+
     evaluation = llm_client.generate_structured(
         system_prompt=EVALUATE_ANSWER_SYSTEM_PROMPT,
         user_prompt=EVALUATE_ANSWER_USER_PROMPT.format(
             question=cur_q["text"],
             expected_points=str(cur_q["expected_points"]),
-            answer=last_answer.get("text", "[Audio Answer]")
+            answer=last_answer["text"]
         ),
         response_model=Evaluation
     )
     
-    # Link IDs
+    # Store
     evaluation.question_id = cur_q["id"]
-    
-    # Update History
-    evals = state.get("eval_history", [])
-    evals.append(evaluation.model_dump())
-    state["eval_history"] = evals
-    
-    # Update question history now that it's done? 
-    # Actually we should add question to history when it's generated? 
-    # Let's say question_history tracks *completed* questions? 
-    # Or we track all generated questions.
-    # Let's append current question to history now that it's evaluated.
-    q_hist = state.get("question_history", [])
-    q_hist.append(cur_q)
-    state["question_history"] = q_hist
-    
-    state["current_question"] = None # Reset for next
-    state["current_step"] += 1
+    state.setdefault("eval_history", []).append(evaluation.model_dump())
     
     return state
 
 def node_generate_report_json(state: InterviewState) -> InterviewState:
     print("--- Node: Generate Report ---")
     
-    # Summarize history for context
-    history_summary = ""
-    qs = state.get("question_history", [])
-    ans = state.get("answer_history", [])
-    evals = state.get("eval_history", [])
+    # Re-build complete history from transcript for the report
+    history_text = "\n".join([f"{t['role'].upper()}: {t['text']}" for t in state.get("transcript", [])])
     
-    for i in range(len(qs)):
-        q = qs[i] if i < len(qs) else {}
-        a = ans[i] if i < len(ans) else {}
-        e = evals[i] if i < len(evals) else {}
-        history_summary += f"Q{i+1}: {q.get('text')}\nA: {a.get('text')}\nScore: {e.get('correctness_score')}/10\n\n"
-        
     report = llm_client.generate_structured(
         system_prompt=REPORT_SYSTEM_PROMPT,
         user_prompt=REPORT_USER_PROMPT.format(
             role=state["role"],
             difficulty=state["difficulty"],
-            history_summary=history_summary
+            history_summary=history_text
         ),
         response_model=FinalReport
     )
@@ -155,143 +193,113 @@ def node_generate_report_json(state: InterviewState) -> InterviewState:
     state["is_finished"] = True
     return state
 
-# --- Conditional Edges ---
+# --- Router ---
 
-def decide_next_step(state: InterviewState) -> str:
-    # If we just summarized resume -> generate first question
-    if not state.get("question_history") and not state.get("current_question"):
-        return "generate_question"
+def decide_next_step(state: InterviewState) -> Literal["generate_followup", "generate_main_question", "generate_report"]:
     
-    # If we just evaluated
-    if state["current_question"] is None:
-        # Check limits
-        if state["current_step"] > state["total_questions"]:
-            return "generate_report"
-        else:
-            return "generate_question"
-            
-    return END
+    # 1. Check if finished flag
+    if state.get("is_finished"):
+        return "generate_report"
+        
+    # 2. Check last evaluation for follow-up
+    evals = state.get("eval_history", [])
+    if evals:
+        last_eval = evals[-1]
+        
+        # Check if we should followup
+        if last_eval.get("followup_needed") and \
+           state.get("followup_count_for_current", 0) < state.get("max_followups_per_question", 1):
+               return "generate_followup"
+    
+    # 3. Check if we reached total MAIN questions
+    if state.get("asked_main_questions", 0) >= state.get("total_questions", 5):
+        return "generate_report"
+        
+    return "generate_main_question"
+
+# --- Entry Router ---
+def node_router_start(state: InterviewState) -> Literal["summarize_resume", "generate_report", "evaluate_answer", "generate_main_question", "generate_followup"]:
+    print("--- Node: Router Start ---")
+    
+    # 1. New Session?
+    if not state.get("resume_summary"):
+        return "summarize_resume"
+        
+    # 2. Finished?
+    if state.get("is_finished"):
+        # If report already exists, we are done-done. 
+        # But if is_finished=True and report is None, we generate.
+        if state.get("final_report"):
+            return END
+        return "generate_report"
+        
+    # 3. Pending Answer? 
+    # If we have more answers than evaluations, we need to evaluate.
+    # (Assuming the API added the answer just before invoking)
+    ans_len = len(state.get("answer_history", []))
+    eval_len = len(state.get("eval_history", []))
+    if ans_len > eval_len:
+        return "evaluate_answer"
+        
+    # 4. Otherwise, standard flow check (router)
+    # Check if we have a pending question that needs answering -> END (wait for input)
+    # Actually if we are here, and have equal Q/A/Eva, we need next Q.
+    # UNLESS we are waiting for input.
+    # How do we know if we are waiting? 
+    # If we just generated a question, answer_history count == eval_count == question_count - 1 
+    # (assuming we added to history? No, main logic adds to valid transcript/history upon generation?)
+    
+    # Let's rely on decide_next_step logic mostly, but we need to know if we are "in between" turns
+    return decide_next_step(state)
 
 # --- Graph Construction ---
 
 workflow = StateGraph(InterviewState)
 
+# Add nodes
+workflow.add_node("router_start", node_router_start) # Virtual node acting as router? 
+# LangGraph nodes must return state updates OR we use conditional_entry_point.
+# Let's use set_conditional_entry_point instead of a node if possible.
+# Actually, LangGraph supports conditional entry points directly.
+
 workflow.add_node("summarize_resume", node_summarize_resume)
-workflow.add_node("generate_question", node_generate_question)
+workflow.add_node("generate_main_question", node_generate_main_question)
+workflow.add_node("generate_followup", node_generate_followup)
 workflow.add_node("evaluate_answer", node_evaluate_answer)
 workflow.add_node("generate_report", node_generate_report_json)
 
-# We need to define entry point.
-# Actually, the graph is stateful. We might start different nodes based on where we are.
-# But LangGraph usually runs from start or resumes.
-# For API usage, we will likely call `app.invoke(current_state)` and let it figure out next node?
-# Or more precisely, we define the flow:
+# Entry point logic
+workflow.set_conditional_entry_point(
+    node_router_start,
+    {
+        "summarize_resume": "summarize_resume",
+        "generate_report": "generate_report",
+        "evaluate_answer": "evaluate_answer",
+        "generate_main_question": "generate_main_question",
+        "generate_followup": "generate_followup",
+        END: END
+    }
+)
 
-# Flow 1: Start Session
-# START -> summarize_resume -> generate_question -> END (Wait for user)
+# Edges
+workflow.add_edge("summarize_resume", "generate_main_question")
 
-# Flow 2: User Answers
-# (User Input injected) -> evaluate_answer -> CHECK (More Qs?) -> generate_question -> END
-#                                            (No) -> generate_report -> END
-
-# We can wire this as:
-
-
-# Let's redesign edges using conditional logic or compiled graph reuse.
-# Ideally:
-# 1. summarize -> generate_q -> END
-# 2. (resume with answer) -> evaluate -> condition -> [generate_q, generate_report]
-
-# We will handle the "resume with answer" by manually setting the entry point when invoking in api?
-# LangGraph allows `app.invoke(input, config={"configurable": {"start_node": ...}})` potentially, 
-# or we just rely on state.
-# But simpler: The graph defines the *whole* logic, but we can execute it step by step.
-# Or separate graphs?
-# Let's use a single graph but careful with edges.
-
-# If we use `compile()`, we get a Runnable.
-# If we run it, it goes until it hits END or an interrupt.
-# We want to interrupt after `generate_question` to wait for user.
-
-workflow.add_edge("generate_report", END)
-
-# Conditional from evaluate
-def after_evaluation(state: InterviewState):
-    if state["current_step"] > state["total_questions"]:
-        return "generate_report"
-    return "generate_question"
-
+# Conditional Routing after Evaluate
 workflow.add_conditional_edges(
     "evaluate_answer",
-    after_evaluation,
+    decide_next_step,
     {
-        "generate_question": "generate_question",
+        "generate_followup": "generate_followup",
+        "generate_main_question": "generate_main_question",
         "generate_report": "generate_report"
     }
 )
 
-# How to stop after generate_question?
-# We can make generate_question a node that ends.
-# But if summarize -> generate -> then we want to stop.
-# If evaluate -> generate -> then we want to stop.
-# So `generate_question` should point to END?
-# Yes. The user will trigger the next run by calling "answer". 
-# The "answer" endpoint will inject the answer invoke "evaluate_answer".
+# New questions go to END (to wait for user input)
+workflow.add_edge("generate_main_question", END)
+workflow.add_edge("generate_followup", END)
 
-workflow.add_edge("summarize_resume", "generate_question")
-workflow.add_edge("generate_question", END)
-
-# Entry points:
-# We might need to handle the "re-entry" for evaluation specially.
-# Standard LangGraph starts at entry_point.
-# If we want to start at "evaluate_answer", we can't easily jump middle unless we use checkpoints/interrupts.
-# MVP Simpler Approach: 
-# We don't use the graph for *everything* in one mega-run. 
-# We use helper functions for nodes and orchestrate in the API? 
-# OR we define a graph that decides what to do based on state flags.
-#
-# Let's try the "Router" pattern at start.
-def router(state: InterviewState):
-    # If we have an answer that needs evaluation (and no current score for it)
-    if state.get("answer_history") and len(state["answer_history"]) > len(state.get("eval_history", [])):
-        print("Routing to: evaluate_answer")
-        return "evaluate_answer"
-    
-    # If we have no summary
-    if not state.get("resume_summary"):
-        print("Routing to: summarize_resume")
-        return "summarize_resume"
-
-    # If we have summary but no current question (and not finished)
-    if not state.get("current_question") and not state.get("is_finished"):
-         # Check if we should actually be finished?
-         if state["current_step"] > state["total_questions"]:
-             return "generate_report"
-         return "generate_question"
-    
-    # If explicitly finished (e.g. via /end endpoint) but no report yet
-    if state.get("is_finished") and not state.get("final_report"):
-        print("Routing to: generate_report (Explicit End)")
-        return "generate_report"
-         
-    return END
-
-# This is a "State Machine" where we just call `app.invoke(state)` and it does ONE transition block.
-# Since LangGraph enforces a graph structure, let's use a "router_node" as entry.
-
-workflow.add_node("router_node", lambda x: x) # Passthrough
-workflow.set_entry_point("router_node")
-
-workflow.add_conditional_edges(
-    "router_node",
-    router,
-    {
-        "summarize_resume": "summarize_resume",
-        "evaluate_answer": "evaluate_answer",
-        "generate_question": "generate_question",
-        "generate_report": "generate_report",
-        END: END
-    }
-)
+# Report goes to END
+workflow.add_edge("generate_report", END)
 
 app = workflow.compile()

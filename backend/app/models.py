@@ -71,12 +71,13 @@ class Question(BaseModel):
     topic: str
     expected_points: List[str]
     difficulty: DifficultyEnum
+    kind: str = "main" # "main" or "followup"
     time_limit_sec: int = 60
 
 class Answer(BaseModel):
     question_id: str
     text: Optional[str] = None
-    audio_url: Optional[str] = None # for later
+    audio_url: Optional[str] = None
 
 class Evaluation(BaseModel):
     question_id: str
@@ -87,6 +88,7 @@ class Evaluation(BaseModel):
     missing_points: List[str] = []
     feedback_text: str
     followup_needed: bool = False
+    followup_reason: Optional[str] = None
     followup_question: Optional[str] = None
 
 class FinalReport(BaseModel):
@@ -114,6 +116,7 @@ class AnswerRequest(BaseModel):
 class SessionStateResponse(BaseModel):
     session_id: str
     current_question: Optional[Question]
+    is_followup: bool = False
     progress: str # "2/5"
     messages: List[Dict[str, Any]] # simplified for chat UI
     scores: Optional[Evaluation] # most recent evaluation

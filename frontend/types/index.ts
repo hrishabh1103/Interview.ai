@@ -34,6 +34,7 @@ export interface Message {
 export interface SessionState {
   session_id: string;
   current_question: Question | null;
+  is_followup: boolean;
   progress: string;
   messages: Message[];
   scores: Evaluation | null;
@@ -50,4 +51,11 @@ export interface FinalReport {
 
 export interface ReportResponse {
   report: FinalReport;
+}
+
+export interface VoiceOption {
+  short_name: string;
+  gender: string;
+  locale: string;
+  friendly_name: string;
 }

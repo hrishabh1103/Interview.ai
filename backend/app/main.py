@@ -12,9 +12,16 @@ from .database import engine, get_db
 from .repo import SessionRepo
 from .services.resume import parse_resume_pdf
 from .services.pdf import generate_pdf_report
-from .services.voice import check_voice_availability, transcribe_audio, synthesize_speech
+from .services.voice import check_voice_availability, transcribe_audio, synthesize_speech, get_available_voices
 from .graph import app as graph_app
 from .models import FinalReport
+from pydantic import BaseModel
+
+class SpeakRequest(BaseModel):
+    text: str
+    voice: str = "en-US-ChristopherNeural"
+    rate: str = "+0%"
+    pitch: str = "+0Hz"
 
 # Create DB Tables (Auto-migration for MVP)
 Base.metadata.create_all(bind=engine)
@@ -50,56 +57,48 @@ def run_graph_and_update(session_id: str, current_state: dict, repo: SessionRepo
 
 def map_state_to_response(session_id: str, state: dict) -> SessionStateResponse:
     # Construct progress string
-    curr = state.get("current_step", 1)
+    curr = state.get("asked_main_questions", 1) # usage of new counter
     total = state.get("total_questions", 5)
     progress = f"{min(curr, total)}/{total}"
     
-    # Construct messages list for UI
+    # Construct messages list for UI from Transcript
     messages = []
     
-    # Add Resume Summary as system context (optional or hidden)
-    # messages.append({"role": "system", "content": "Resume analyzed."})
-    
-    q_hist = state.get("question_history", [])
-    a_hist = state.get("answer_history", [])
-    e_hist = state.get("eval_history", [])
-    
-    # Interleave Q and A
-    # The history lists might not be perfectly synced if in middle of turn, but usually are.
-    # question_history is updated when a question is *generated*.
-    # answer_history is updated when a user *answers*.
-    
-    max_len = max(len(q_hist), len(a_hist))
-    
-    for i in range(max_len):
-        if i < len(q_hist):
-            messages.append({"role": "interviewer", "content": q_hist[i]['text']})
-        
-        if i < len(a_hist):
-            messages.append({"role": "candidate", "content": a_hist[i]['text']})
-            
-            # Show evaluation if available?
-            # Maybe as a separate UI element or system message?
-            # if i < len(e_hist):
-            #    messages.append({"role": "system", "content": f"Score: {e_hist[i]['correctness_score']}"})
-
-    # Add current question if it exists and not in history yet?
-    # In our graph, we generated 'current_question' but maybe didn't append to 'question_history' yet?
-    # Check graph logic: we append to history AFTER evaluation. 
-    # So 'current_question' is the pending one.
-    curr_q = state.get("current_question")
-    if curr_q:
-         messages.append({"role": "interviewer", "content": curr_q['text']})
+    # Use new transcript if available, otherwise fallback to legacy history
+    if "transcript" in state and state["transcript"]:
+        for turn in state["transcript"]:
+            messages.append({"role": turn["role"], "content": turn["text"]})
+    else:
+        # Fallback for old sessions or if transcript missing
+        q_hist = state.get("question_history", [])
+        a_hist = state.get("answer_history", [])
+        max_len = max(len(q_hist), len(a_hist))
+        for i in range(max_len):
+            if i < len(q_hist):
+                messages.append({"role": "interviewer", "content": q_hist[i]['text']})
+            if i < len(a_hist):
+                messages.append({"role": "candidate", "content": a_hist[i]['text']})
+        # Add current Q if not in history
+        curr_q = state.get("current_question")
+        if curr_q:
+             messages.append({"role": "interviewer", "content": curr_q['text']})
 
     # Most recent evaluation
     last_eval = None
+    e_hist = state.get("eval_history", [])
     if e_hist:
-        # Convert dict back to model or just return dict
         last_eval = Evaluation(**e_hist[-1])
+        
+    curr_q_obj = state.get("current_question")
+    # Identify if followup
+    is_f = False
+    if curr_q_obj and curr_q_obj.get("kind") == "followup":
+        is_f = True
 
     return SessionStateResponse(
         session_id=session_id,
-        current_question=curr_q,
+        current_question=curr_q_obj,
+        is_followup=is_f,
         progress=progress,
         messages=messages,
         scores=last_eval
@@ -121,14 +120,24 @@ async def speech_to_text(file: UploadFile = File(...)):
     """
     raise HTTPException(status_code=400, detail="Client-side STT required.")
 
+@app.get("/voice/options")
+async def get_voice_options():
+    """Returns list of supported voices."""
+    return get_available_voices()
+
 @app.post("/speech/speak")
-async def text_to_speech_endpoint(request: AnswerRequest): 
-    # Reusing AnswerRequest just for 'text' field, or define new model
+async def text_to_speech_endpoint(request: SpeakRequest): 
+    # Use robust SpeakRequest
     if not check_voice_availability():
         raise HTTPException(status_code=503, detail="Voice mode disabled")
         
     try:
-        audio_bytes = await synthesize_speech(request.text)
+        audio_bytes = await synthesize_speech(
+            text=request.text,
+            voice_name=request.voice,
+            rate=request.rate,
+            pitch=request.pitch
+        )
         return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as e:
          print(f"TTS Error: {e}")
