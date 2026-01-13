@@ -65,10 +65,10 @@ export default function InterviewPage() {
 
     useEffect(() => {
         // Monitor finish state
-        if (session && !session.current_question && !session.is_followup && session.progress) {
-            // simplified check
+        if (session?.interview_complete) {
+            router.push(`/report/${sessionId}`);
         }
-    }, [session]);
+    }, [session, sessionId, router]);
 
     const playTTS = async (text: string) => {
         try {
@@ -108,6 +108,10 @@ export default function InterviewPage() {
             const newState = await submitAnswer(sessionId, input);
             setSession(newState);
             setInput("");
+
+            if (newState.interview_complete) {
+                router.push(`/report/${sessionId}`);
+            }
         } catch (err) {
             console.error(err);
             alert("Failed to send answer. Please try again.");

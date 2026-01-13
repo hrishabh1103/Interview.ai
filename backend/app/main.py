@@ -11,17 +11,12 @@ from .models import (
 from .database import engine, get_db
 from .repo import SessionRepo
 from .services.resume import parse_resume_pdf
-from .services.pdf import generate_pdf_report
+from .services.report import generate_report_pdf
 from .services.voice import check_voice_availability, transcribe_audio, synthesize_speech, get_available_voices
 from .graph import app as graph_app
-from .models import FinalReport
+from .models import FinalReport, SpeakRequest
 from pydantic import BaseModel
 
-class SpeakRequest(BaseModel):
-    text: str
-    voice: str = "en-US-ChristopherNeural"
-    rate: str = "+0%"
-    pitch: str = "+0Hz"
 
 # Create DB Tables (Auto-migration for MVP)
 Base.metadata.create_all(bind=engine)
@@ -101,7 +96,9 @@ def map_state_to_response(session_id: str, state: dict) -> SessionStateResponse:
         is_followup=is_f,
         progress=progress,
         messages=messages,
-        scores=last_eval
+        scores=last_eval,
+        interview_complete=state.get("is_finished", False),
+        report_available=bool(state.get("final_report"))
     )
 
 # --- Endpoints ---
@@ -262,7 +259,15 @@ async def get_report_pdf(session_id: str, repo: SessionRepo = Depends(get_repo))
         raise HTTPException(status_code=400, detail="Report not ready yet")
         
     report_data = FinalReport(**state["final_report"])
-    pdf_bytes = generate_pdf_report(report_data)
     
-    # fpdf2 returns bytearray, Response expects bytes
-    return Response(content=bytes(pdf_bytes), media_type="application/pdf")
+    # Use new reportlab service which returns path
+    try:
+        pdf_path = generate_report_pdf(report_data, session_id, state.get("messages", []))
+        
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+            
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except Exception as e:
+        print(f"PDF Gen Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate PDF report")

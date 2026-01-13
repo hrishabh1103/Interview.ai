@@ -38,6 +38,8 @@ export interface SessionState {
   progress: string;
   messages: Message[];
   scores: Evaluation | null;
+  interview_complete: boolean;
+  report_available: boolean;
 }
 
 export interface FinalReport {

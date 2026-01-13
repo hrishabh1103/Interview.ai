@@ -120,6 +120,14 @@ class SessionStateResponse(BaseModel):
     progress: str # "2/5"
     messages: List[Dict[str, Any]] # simplified for chat UI
     scores: Optional[Evaluation] # most recent evaluation
+    interview_complete: bool = False
+    report_available: bool = False
 
 class ReportResponse(BaseModel):
     report: FinalReport
+
+class SpeakRequest(BaseModel):
+    text: str
+    voice: str = "en-US-ChristopherNeural"
+    rate: str = "+0%"
+    pitch: str = "+0Hz"
