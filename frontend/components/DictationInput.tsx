@@ -6,6 +6,7 @@ import { Mic, MicOff, Loader2 } from "lucide-react";
 interface DictationInputProps {
     onResult: (text: string) => void;
     onInterimResult?: (text: string) => void;
+    onListeningChange?: (isListening: boolean) => void;
     disabled?: boolean;
     autoSubmit?: boolean;
     silenceWaitSec?: number;
@@ -14,6 +15,7 @@ interface DictationInputProps {
 export function DictationInput({
     onResult,
     onInterimResult,
+    onListeningChange,
     disabled,
     autoSubmit = false,
     silenceWaitSec = 7
@@ -23,6 +25,11 @@ export function DictationInput({
     const lastSpeechTimeRef = useRef<number>(0);
     const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
     const currentTranscriptRef = useRef<string>("");
+
+    // Bubble state up
+    useEffect(() => {
+        onListeningChange?.(isListening);
+    }, [isListening, onListeningChange]);
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -49,13 +56,6 @@ export function DictationInput({
                     }
 
                     const fullText = final || interim;
-                    // Note: continuously updating fullText might be tricky with continuous=true logic resetting?
-                    // Simplified: Just take the latest result as "current" if we assume single turn.
-                    // Actually, for auto-submit, we just want the growing buffer.
-                    // Web Speech API accumulation with continuous=true can be complex.
-                    // Let's stick to continuous=false behavior simulation or just accumulate?
-
-                    // Better approach for this app: Just take the latest interim or final as "what user said so far".
                     currentTranscriptRef.current = fullText;
 
                     if (onInterimResult) {
@@ -71,13 +71,9 @@ export function DictationInput({
                 };
 
                 recognitionRef.current.onend = () => {
-                    // If continuous=true, it shouldn't end unless we stop it.
-                    // But if it does (network, etc), update state.
                     if (!autoSubmit) {
                         setIsListening(false);
                     } else {
-                        // If autoSubmit is on, we might want to restart? Or just stop.
-                        // Let's stop to be safe.
                         setIsListening(false);
                     }
                 };

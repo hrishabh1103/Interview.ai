@@ -1,11 +1,20 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getSessionState, submitAnswer, endSession, getVoiceStatus, synthesizeSpeech, getVoiceOptions } from "@/lib/api";
 import { SessionState, Message, VoiceOption } from "@/types";
 import { DictationInput } from "@/components/DictationInput";
-import { Volume2, Settings } from "lucide-react";
+import { Settings, Send, LayoutDashboard, MessageSquare, UserCircle } from "lucide-react";
+import { GlassCard } from "@/components/GlassCard";
+import { AiAvatar } from "@/components/AiAvatar";
+import { CameraPreview } from "@/components/CameraPreview";
+import { QuestionCard } from "@/components/QuestionCard";
+import { ScoreBoard } from "@/components/ScoreBoard";
+import { Button } from "@/components/ui/button";
+import { motion, AnimatePresence } from "framer-motion";
+
+type Tab = "avatar" | "chat" | "stats";
 
 export default function InterviewPage() {
     const params = useParams();
@@ -16,9 +25,14 @@ export default function InterviewPage() {
     const [input, setInput] = useState("");
     const [loading, setLoading] = useState(false);
 
+    // UI State
+    const [activeTab, setActiveTab] = useState<Tab>("chat");
+    const [cameraOn, setCameraOn] = useState(false);
+
     // Voice State
     const [voiceEnabled, setVoiceEnabled] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
+    const [isListening, setIsListening] = useState(false); // From DictationInput
     const audioRef = useRef<HTMLAudioElement | null>(null);
 
     // Voice Settings
@@ -32,49 +46,9 @@ export default function InterviewPage() {
     const scrollRef = useRef<HTMLDivElement>(null);
     const processedMsgs = useRef<Set<string>>(new Set());
 
-    // 1. Init Session & Voice Check
-    useEffect(() => {
-        getSessionState(sessionId).then(setSession).catch(console.error);
-        getVoiceStatus().then((enabled) => {
-            setVoiceEnabled(enabled);
-            if (enabled) {
-                getVoiceOptions().then(setVoiceOptions).catch(console.error);
-            }
-        }).catch(() => setVoiceEnabled(false));
-    }, [sessionId]);
-
-    // 3. Auto-Play Audio for new Interviewer messages (Voice Mode)
-    useEffect(() => {
-        if (!session || !voiceEnabled) {
-            console.log("TTS Skipped: No session or voice disabled", { voiceEnabled });
-            return;
-        }
-
-        const msgs = session.messages;
-        if (msgs.length === 0) return;
-
-        const lastMsg = msgs[msgs.length - 1];
-        // Generate a pseudo-ID if not present (hash content + index)
-        const msgId = `${msgs.length}-${lastMsg.content.substring(0, 10)}`;
-
-        if (lastMsg.role === "interviewer" && !processedMsgs.current.has(msgId)) {
-            processedMsgs.current.add(msgId);
-            playTTS(lastMsg.content);
-        }
-    }, [session, voiceEnabled]);
-
-    useEffect(() => {
-        // Monitor finish state
-        if (session?.interview_complete) {
-            router.push(`/report/${sessionId}`);
-        }
-    }, [session, sessionId, router]);
-
-    const playTTS = async (text: string) => {
+    const playTTS = useCallback(async (text: string) => {
         try {
             setIsPlaying(true);
-
-            // Format rate: 1.0 -> "+0%", 1.1 -> "+10%"
             const ratePct = Math.round((voiceRate - 1.0) * 100);
             const rateStr = ratePct >= 0 ? `+${ratePct}%` : `${ratePct}%`;
 
@@ -91,16 +65,54 @@ export default function InterviewPage() {
             console.error("TTS play failed", err);
             setIsPlaying(false);
         }
-    };
+    }, [voiceRate, selectedVoice]);
 
-    const handleSend = async () => {
+    // 1. Init Session & Voice Check
+    useEffect(() => {
+        getSessionState(sessionId).then(setSession).catch(console.error);
+        getVoiceStatus().then((enabled) => {
+            setVoiceEnabled(enabled);
+            if (enabled) {
+                getVoiceOptions().then(setVoiceOptions).catch(console.error);
+            }
+        }).catch(() => setVoiceEnabled(false));
+    }, [sessionId]);
+
+    // 2. Auto-scroll
+    useEffect(() => {
+        if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+    }, [session?.messages.length]);
+
+    // 3. Auto-Play Audio for new Interviewer messages
+    useEffect(() => {
+        if (!session || !voiceEnabled) return;
+
+        const msgs = session.messages;
+        if (msgs.length === 0) return;
+
+        const lastMsg = msgs[msgs.length - 1];
+        const msgId = `${msgs.length}-${lastMsg.content.substring(0, 10)}`;
+
+        if (lastMsg.role === "interviewer" && !processedMsgs.current.has(msgId)) {
+            processedMsgs.current.add(msgId);
+            playTTS(lastMsg.content);
+        }
+    }, [session, voiceEnabled, playTTS]);
+
+    // 4. Auto End
+    useEffect(() => {
+        if (session?.interview_complete) {
+            router.push(`/report/${sessionId}`);
+        }
+    }, [session, sessionId, router]);
+
+    const handleSend = useCallback(async () => {
         if (!input.trim() || !sessionId) return;
-
-        // Stop audio if speaking
         if (audioRef.current) audioRef.current.pause();
 
         setLoading(true);
-
         const userMsg: Message = { role: "candidate", content: input };
         setSession(prev => prev ? { ...prev, messages: [...prev.messages, userMsg] } : null);
 
@@ -114,267 +126,278 @@ export default function InterviewPage() {
             }
         } catch (err) {
             console.error(err);
-            alert("Failed to send answer. Please try again.");
+            alert("Failed to send answer.");
         } finally {
             setLoading(false);
         }
-    };
+    }, [input, sessionId, router]);
 
-    const handleVoiceResult = (text: string) => {
+    const handleVoiceResult = useCallback((text: string) => {
         if (!text.trim()) return;
         setInput(text);
-        // No auto-send
-    };
+    }, []);
 
-    const handleEnd = async () => {
-        if (confirm("Are you sure you want to end the interview early?")) {
+    const handleEnd = useCallback(async () => {
+        if (confirm("End interview early?")) {
             await endSession(sessionId);
             router.push(`/report/${sessionId}`);
         }
-    }
+    }, [sessionId, router]);
 
-    if (!session) return <div className="flex h-screen items-center justify-center bg-zinc-950 text-white">Loading...</div>;
+    // Derived State
+    const avatarMode = useMemo(() => isPlaying ? "speaking" : (isListening ? "listening" : "idle"), [isPlaying, isListening]);
+    const currentQuestionText = useMemo(() => {
+        if (!session) return "";
+        // Prefer explicit current_question if available, else fallback to last interviewer message
+        if (session.current_question) return session.current_question.text;
+        const lastMsg = session.messages[session.messages.length - 1];
+        return lastMsg?.role === "interviewer" ? lastMsg.content : "Waiting for next question...";
+    }, [session]);
+
+    if (!session) return <div className="flex h-screen items-center justify-center text-white">Loading...</div>;
 
     return (
-        <div className="flex h-screen bg-zinc-950 text-zinc-50 overflow-hidden">
-            {/* Audio Element Hidden */}
+        <div className="flex h-screen overflow-hidden relative bg-zinc-950">
             <audio ref={audioRef} className="hidden" />
 
-            {/* Sidebar / Scoreboard (Desktop) */}
-            <div className="hidden w-80 border-r border-zinc-800 bg-zinc-900 p-6 md:flex md:flex-col space-y-6">
-                <div>
-                    <h2 className="text-xl font-bold">Live Scoreboard</h2>
-                    <div className="flex items-center gap-2">
-                        <p className="text-sm text-zinc-400">Question {session.progress}</p>
-                        {session.is_followup && (
-                            <span className="px-2 py-0.5 text-xs font-bold bg-amber-500/20 text-amber-500 rounded border border-amber-500/50">
-                                Follow-up
-                            </span>
-                        )}
-                    </div>
-                </div>
-
-                {session.scores ? (
-                    <div className="space-y-4">
-                        <ScoreItem label="Correctness" value={session.scores.correctness_score} />
-                        <ScoreItem label="Depth" value={session.scores.depth_score} />
-                        <ScoreItem label="Structure" value={session.scores.structure_score} />
-                        <ScoreItem label="Communication" value={session.scores.communication_score} />
-                    </div>
-                ) : (
-                    <div className="text-sm text-zinc-500 italic">Scores appear after first answer...</div>
-                )}
-
-                {voiceEnabled && (
-                    <div className="p-3 bg-blue-900/20 border border-blue-900/50 rounded-lg text-xs text-blue-200 space-y-2">
-                        <div className="flex items-center justify-between font-bold">
-                            <div className="flex items-center gap-2">
-                                <Volume2 className="w-4 h-4" /> Voice Active
-                            </div>
-                            <button onClick={() => setShowSettings(true)} className="hover:text-white" title="Settings">
-                                <Settings className="w-4 h-4" />
-                            </button>
+            {/* Desktop 3-Panel Grid */}
+            <div className="hidden md:grid md:grid-cols-12 w-full h-full gap-4 p-4 min-h-0">
+                {/* Left Panel: Avatar & Controls (Col 3) */}
+                <div className="col-span-3 flex flex-col gap-4 min-h-0">
+                    <GlassCard className="flex-1 flex flex-col items-center justify-center relative p-0 overflow-hidden hover:border-white/10" hoverEffect={false}>
+                        <div className="absolute top-4 left-4 z-10 w-full pr-8">
+                            <CameraPreview active={cameraOn} onToggle={setCameraOn} />
                         </div>
-                        <p>AI speaks automatically. Use the Mic to reply.</p>
-                        <p className="opacity-70 text-[10px]">{autoSubmit ? `Auto-send after ${silenceWait}s silence` : "Manual send"}</p>
-                    </div>
-                )}
+                        <AiAvatar mode={avatarMode} className="scale-125 mt-10" />
 
-                <div className="flex-1" />
-                <button onClick={handleEnd} className="w-full py-2 bg-red-900/30 text-red-200 border border-red-900 rounded hover:bg-red-900/50">
-                    End Interview
-                </button>
-            </div>
-
-            {/* Chat Area */}
-            <div className="flex flex-1 flex-col relative">
-                <header className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 p-4 md:hidden">
-                    <span className="font-bold">Interviewer.AI</span>
-                    <div className="flex items-center gap-3">
-                        <button onClick={() => setShowSettings(true)} className="p-1 text-zinc-400 hover:text-white">
-                            <Settings className="w-5 h-5" />
-                        </button>
-                        <div className="flex items-center gap-2">
-                            <span className="text-sm">{session.progress}</span>
-                            {session.is_followup && (
-                                <span className="text-xs text-amber-500 font-bold">Follow-up</span>
+                        <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-2">
+                            {voiceEnabled && (
+                                <Button variant="ghost" size="icon" onClick={() => setShowSettings(true)} className="text-white/50 hover:bg-white/10">
+                                    <Settings className="w-5 h-5" />
+                                </Button>
                             )}
                         </div>
-                    </div>
-                </header>
-
-                <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {session.messages.map((msg, i) => (
-                        <div key={i} className={`flex ${msg.role === 'candidate' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-[80%] rounded-lg p-4 ${msg.role === 'candidate'
-                                ? 'bg-blue-600 text-white'
-                                : 'bg-zinc-800 text-zinc-100 border border-zinc-700'
-                                }`}>
-                                <p className="whitespace-pre-wrap">{msg.content}</p>
-                            </div>
-                        </div>
-                    ))}
-                    {loading && (
-                        <div className="flex justify-start">
-                            <div className="bg-zinc-800/50 text-zinc-400 p-3 rounded-lg animate-pulse">
-                                Thinking...
-                            </div>
-                        </div>
-                    )}
+                    </GlassCard>
                 </div>
 
-                <div className="border-t border-zinc-800 bg-zinc-900 p-4">
-                    <div className="mx-auto max-w-3xl flex gap-2 items-center">
-                        {voiceEnabled && (
-                            <DictationInput
-                                onResult={handleVoiceResult}
-                                disabled={loading || isPlaying}
-                                autoSubmit={autoSubmit}
-                                silenceWaitSec={silenceWait}
-                            />
-                        )}
+                {/* Center Panel: Chat (Col 6) */}
+                <div className="col-span-6 flex flex-col gap-4 min-h-0">
+                    {/* Question Card (Fixed Height, Scrollable) */}
+                    <QuestionCard
+                        questionNumber={session.progress}
+                        questionText={currentQuestionText}
+                        isFollowUp={session.is_followup}
+                    />
 
-                        <input
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                            disabled={loading || isPlaying}
-                            placeholder={voiceEnabled ? "Speak or type..." : "Type your answer..."}
-                            className="flex-1 bg-zinc-800 border-zinc-700 rounded-lg px-4 py-2 focus:ring-1 focus:ring-blue-500 outline-none"
-                        />
-                        <button
-                            onClick={handleSend}
-                            disabled={loading || !input.trim()}
-                            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                        >
-                            Send
-                        </button>
-                    </div>
-                    {/* Hint/End for mobile */}
-                    <div className="md:hidden mt-2 text-center">
-                        <button
-                            onClick={handleEnd}
-                            className="text-xs text-red-400 underline"
-                        >
-                            End Interview
-                        </button>
-                    </div>
+                    {/* Chat & Input Area */}
+                    <GlassCard className="flex-1 flex flex-col relative p-0 min-h-0 overflow-hidden" hoverEffect={false}>
+                        <div className="p-3 border-b border-white/10 bg-white/5 flex justify-end shrink-0">
+                            <Button variant="ghost" size="sm" onClick={handleEnd} className="text-red-400 hover:text-red-300 hover:bg-red-900/20 h-8 text-xs">
+                                End Session
+                            </Button>
+                        </div>
 
-                    {!session.current_question && !loading && session.messages.length > 0 && (
-                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center backdrop-blur-sm">
-                            <div className="bg-zinc-900 p-8 rounded-xl border border-zinc-700 text-center space-y-4">
-                                <h2 className="text-2xl font-bold">Interview Complete</h2>
-                                <button
-                                    onClick={() => router.push(`/report/${sessionId}`)}
-                                    className="px-8 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-bold"
+                        {/* Messages List - Optimized */}
+                        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+                            {session.messages.map((msg, i) => (
+                                <div
+                                    key={i}
+                                    className={`flex ${msg.role === 'candidate' ? 'justify-end' : 'justify-start'}`}
                                 >
-                                    View Results
-                                </button>
+                                    <div className={`max-w-[85%] rounded-2xl p-4 text-sm shadow-sm ${msg.role === 'candidate'
+                                        ? 'bg-blue-600 text-white rounded-br-none'
+                                        : 'bg-zinc-800 text-zinc-100 border border-zinc-700 rounded-bl-none'
+                                        }`}>
+                                        <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                    </div>
+                                </div>
+                            ))}
+                            {loading && (
+                                <div className="flex justify-start">
+                                    <div className="bg-zinc-800/50 text-zinc-400 px-4 py-2 rounded-full animate-pulse text-sm">
+                                        Thinking...
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="p-4 bg-zinc-900/80 border-t border-white/5 backdrop-blur-sm shrink-0">
+                            <div className="flex gap-2 items-end">
+                                {voiceEnabled && (
+                                    <DictationInput
+                                        onResult={handleVoiceResult}
+                                        onListeningChange={setIsListening}
+                                        disabled={loading || isPlaying}
+                                        autoSubmit={autoSubmit}
+                                        silenceWaitSec={silenceWait}
+                                    />
+                                )}
+                                <div className="flex-1 bg-zinc-800/50 rounded-xl border border-white/5 focus-within:border-blue-500/50 focus-within:bg-zinc-800 transition-colors">
+                                    <textarea
+                                        value={input}
+                                        onChange={(e) => setInput(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                                        disabled={loading || isPlaying}
+                                        placeholder={voiceEnabled ? "Speak or type..." : "Type your answer..."}
+                                        className="w-full bg-transparent px-4 py-3 outline-none resize-none h-[52px] max-h-32 text-sm"
+                                        rows={1}
+                                    />
+                                </div>
+                                <Button
+                                    onClick={handleSend}
+                                    disabled={loading || !input.trim()}
+                                    className="h-[52px] w-[52px] rounded-xl bg-blue-600 hover:bg-blue-500"
+                                >
+                                    <Send className="w-5 h-5" />
+                                </Button>
                             </div>
                         </div>
-                    )}
+                    </GlassCard>
+                </div>
+
+                {/* Right Panel: Stats (Col 3) */}
+                <div className="col-span-3 flex flex-col gap-4 min-h-0">
+                    <ScoreBoard scores={session.scores} />
                 </div>
             </div>
-            {/* Settings Modal */}
-            {showSettings && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-                    <div className="w-full max-w-md bg-zinc-900 rounded-xl border border-zinc-700 p-6 space-y-6 shadow-2xl">
-                        <div className="flex justify-between items-center">
-                            <h2 className="text-xl font-bold flex items-center gap-2">
-                                <Settings className="w-5 h-5" /> Voice Settings
-                            </h2>
-                            <button onClick={() => setShowSettings(false)} className="text-zinc-400 hover:text-white">✕</button>
-                        </div>
 
+            {/* Mobile View with Tabs */}
+            <div className="md:hidden flex flex-col w-full h-full relative">
+                {/* Mobile Header */}
+                <div className="h-14 border-b border-white/10 bg-zinc-900/80 backdrop-blur flex items-center justify-between px-4 sticky top-0 z-20 shrink-0">
+                    <span className="font-bold">Interviewer.AI</span>
+                    <Button variant="ghost" size="sm" onClick={handleEnd} className="text-red-400 h-8">End</Button>
+                </div>
+
+                <div className="flex-1 overflow-hidden relative">
+                    <AnimatePresence mode="wait">
+                        {activeTab === "avatar" && (
+                            <motion.div
+                                key="avatar"
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                                className="absolute inset-0 p-4 flex flex-col items-center justify-center overflow-auto"
+                            >
+                                <QuestionCard
+                                    className="w-full mb-4 shrink-0"
+                                    questionNumber={session.progress}
+                                    questionText={currentQuestionText}
+                                    isFollowUp={session.is_followup}
+                                />
+                                <CameraPreview active={cameraOn} onToggle={setCameraOn} />
+                                <div className="flex-1 flex items-center justify-center min-h-[300px]">
+                                    <AiAvatar mode={avatarMode} />
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {activeTab === "chat" && (
+                            <motion.div
+                                key="chat"
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                                className="absolute inset-0 flex flex-col"
+                            >
+                                <QuestionCard
+                                    className="shrink-0 mb-1 rounded-none border-x-0 border-t-0"
+                                    questionNumber={session.progress}
+                                    questionText={currentQuestionText}
+                                    isFollowUp={session.is_followup}
+                                />
+
+                                <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 min-h-0">
+                                    {session.messages.map((msg, i) => (
+                                        <div key={i} className={`flex ${msg.role === 'candidate' ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[85%] rounded-xl p-3 text-sm ${msg.role === 'candidate' ? 'bg-blue-600 text-white' : 'bg-zinc-800 border border-zinc-700'}`}>
+                                                <p>{msg.content}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="absolute bottom-0 left-0 right-0 p-3 bg-zinc-900/90 border-t border-white/10 backdrop-blur-md">
+                                    <div className="flex gap-2">
+                                        {voiceEnabled && (
+                                            <DictationInput
+                                                onResult={handleVoiceResult}
+                                                onListeningChange={setIsListening}
+                                                disabled={loading || isPlaying}
+                                                autoSubmit={autoSubmit}
+                                                silenceWaitSec={silenceWait}
+                                            />
+                                        )}
+                                        <input
+                                            value={input}
+                                            onChange={(e) => setInput(e.target.value)}
+                                            className="flex-1 bg-zinc-800 rounded-full px-4 text-sm outline-none border border-white/5 focus:border-blue-500"
+                                            placeholder="Type answer..."
+                                        />
+                                        <Button size="icon" className="rounded-full w-10 h-10" onClick={handleSend}><Send className="w-4 h-4" /></Button>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {activeTab === "stats" && (
+                            <motion.div
+                                key="stats"
+                                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                                className="absolute inset-0 p-4 overflow-y-auto"
+                            >
+                                <ScoreBoard scores={session.scores} />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+
+                {/* Mobile Bottom Nav */}
+                <div className="h-16 bg-zinc-950 border-t border-white/10 flex justify-around items-center z-20 shrink-0">
+                    <button onClick={() => setActiveTab("avatar")} className={`p-2 flex flex-col items-center gap-1 ${activeTab === "avatar" ? "text-blue-400" : "text-zinc-600"}`}>
+                        <UserCircle className="w-6 h-6" />
+                        <span className="text-[10px]">Avatar</span>
+                    </button>
+                    <button onClick={() => setActiveTab("chat")} className={`p-2 flex flex-col items-center gap-1 ${activeTab === "chat" ? "text-blue-400" : "text-zinc-600"}`}>
+                        <MessageSquare className="w-6 h-6" />
+                        <span className="text-[10px]">Chat</span>
+                    </button>
+                    <button onClick={() => setActiveTab("stats")} className={`p-2 flex flex-col items-center gap-1 ${activeTab === "stats" ? "text-blue-400" : "text-zinc-600"}`}>
+                        <LayoutDashboard className="w-6 h-6" />
+                        <span className="text-[10px]">Stats</span>
+                    </button>
+                </div>
+            </div>
+
+            {/* Existing Voice Settings Modal (Hidden by default) */}
+            {showSettings && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                    <GlassCard className="w-full max-w-md space-y-6">
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-xl font-bold">Voice Settings</h2>
+                            <button onClick={() => setShowSettings(false)}>✕</button>
+                        </div>
                         <div className="space-y-4">
-                            {/* Voice Selection */}
                             <div className="space-y-2">
                                 <label className="text-sm text-zinc-400">AI Voice</label>
                                 <select
-                                    value={selectedVoice}
-                                    onChange={(e) => setSelectedVoice(e.target.value)}
-                                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-blue-500 outline-none"
+                                    className="w-full bg-zinc-900 border border-white/10 rounded p-2"
+                                    value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)}
                                 >
-                                    {voiceOptions.map(v => (
-                                        <option key={v.short_name} value={v.short_name}>
-                                            {v.friendly_name}
-                                        </option>
-                                    ))}
+                                    {voiceOptions.map(v => <option key={v.short_name} value={v.short_name}>{v.friendly_name}</option>)}
                                 </select>
                             </div>
 
-                            {/* Speed Slider */}
                             <div className="space-y-2">
-                                <div className="flex justify-between">
-                                    <label className="text-sm text-zinc-400">Speed</label>
-                                    <span className="text-xs text-zinc-500">{voiceRate}x</span>
-                                </div>
-                                <input
-                                    type="range" min="0.5" max="2.0" step="0.1"
-                                    value={voiceRate}
-                                    onChange={(e) => setVoiceRate(parseFloat(e.target.value))}
-                                    className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                                />
+                                <label className="text-sm text-zinc-400">Speed ({voiceRate}x)</label>
+                                <input type="range" min="0.5" max="2.0" step="0.1" value={voiceRate} onChange={(e) => setVoiceRate(parseFloat(e.target.value))} className="w-full" />
                             </div>
 
-                            <hr className="border-zinc-800" />
-
-                            {/* Auto-Submit Toggle */}
                             <div className="flex items-center justify-between">
-                                <label className="text-sm text-zinc-400">Auto-send after silence</label>
-                                <button
-                                    onClick={() => setAutoSubmit(!autoSubmit)}
-                                    className={`w-12 h-6 rounded-full p-1 transition-colors ${autoSubmit ? 'bg-green-600' : 'bg-zinc-700'}`}
-                                >
-                                    <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${autoSubmit ? 'translate-x-6' : 'translate-x-0'}`} />
-                                </button>
+                                <label className="text-sm text-zinc-400">Auto-submit ({silenceWait}s)</label>
+                                <input type="checkbox" checked={autoSubmit} onChange={(e) => setAutoSubmit(e.target.checked)} className="w-5 h-5" />
                             </div>
-
-                            {/* Silence Duration */}
-                            {autoSubmit && (
-                                <div className="space-y-2">
-                                    <div className="flex justify-between">
-                                        <label className="text-sm text-zinc-400">Silence Wait Time</label>
-                                        <span className="text-xs text-zinc-500">{silenceWait}s</span>
-                                    </div>
-                                    <input
-                                        type="range" min="2" max="10" step="1"
-                                        value={silenceWait}
-                                        onChange={(e) => setSilenceWait(parseInt(e.target.value))}
-                                        className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-green-600"
-                                    />
-                                </div>
-                            )}
                         </div>
-
-                        <button
-                            onClick={() => setShowSettings(false)}
-                            className="w-full py-2 bg-blue-600 rounded-lg font-medium hover:bg-blue-700"
-                        >
-                            Done
-                        </button>
-                    </div>
+                        <Button onClick={() => setShowSettings(false)} className="w-full">Done</Button>
+                    </GlassCard>
                 </div>
             )}
-        </div>
-    );
-}
-
-function ScoreItem({ label, value }: { label: string, value: number }) {
-    // Color based on score
-    let color = "bg-red-500";
-    if (value >= 7) color = "bg-green-500";
-    else if (value >= 4) color = "bg-yellow-500";
-
-    return (
-        <div className="space-y-1">
-            <div className="flex justify-between text-sm">
-                <span>{label}</span>
-                <span className="font-mono">{value}/10</span>
-            </div>
-            <div className="h-2 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${value * 10}%` }} />
-            </div>
         </div>
     );
 }

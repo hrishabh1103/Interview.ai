@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { BackgroundFX } from "@/components/BackgroundFX";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,11 +28,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-zinc-950 text-zinc-50`}
       >
-        <div className="flex flex-col min-h-screen">
+        <BackgroundFX />
+        <div className="flex flex-col min-h-screen relative z-0">
           <main className="flex-1">
             {children}
           </main>
-          <footer className="py-6 text-center text-xs text-zinc-600 border-t border-zinc-900">
+          <footer className="py-6 text-center text-xs text-zinc-600 border-t border-zinc-900/50 backdrop-blur-sm z-10">
             <p>Made by Hrishabh Gupta. All rights reserved.</p>
           </footer>
         </div>

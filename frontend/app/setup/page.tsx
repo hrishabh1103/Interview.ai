@@ -4,109 +4,190 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { startSession } from "@/lib/api";
 import { RoleEnum, DifficultyEnum } from "@/types";
+import { motion, AnimatePresence } from "framer-motion";
+import { GlassCard } from "@/components/GlassCard";
+import { Button } from "@/components/ui/button";
+import { Mic, Upload, ArrowRight, User, CheckCircle2 } from "lucide-react";
 
 export default function SetupPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [step, setStep] = useState(1);
 
-    async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-        e.preventDefault();
-        setLoading(true);
-        setError("");
+    // Form State
+    const [role, setRole] = useState<RoleEnum>("SDE1");
+    const [difficulty, setDifficulty] = useState<DifficultyEnum>("Medium");
+    const [numQuestions, setNumQuestions] = useState(5);
+    const [resume, setResume] = useState<File | null>(null);
+    const [voiceEnabled, setVoiceEnabled] = useState(false);
 
-        const formData = new FormData(e.currentTarget);
-        const role = formData.get("role") as RoleEnum;
-        const difficulty = formData.get("difficulty") as DifficultyEnum;
-        const numQuestions = parseInt(formData.get("num_questions") as string);
-        const resumeFile = formData.get("resume") as File;
-        const voiceEnabled = formData.get("voice_enabled") === "on";
+    const handleNext = () => setStep((p) => Math.min(p + 1, 3));
+    const handlePrev = () => setStep((p) => Math.max(p - 1, 1));
 
-        if (!resumeFile || resumeFile.size === 0) {
+    const handleSubmit = async () => {
+        if (!resume) {
             setError("Please upload a resume.");
-            setLoading(false);
             return;
         }
 
+        setLoading(true);
+        setError("");
+
         try {
-            const state = await startSession(role, difficulty, numQuestions, resumeFile, voiceEnabled);
+            const state = await startSession(role, difficulty, numQuestions, resume, voiceEnabled);
             router.push(`/interview/${state.session_id}`);
         } catch (err: any) {
             setError(err.message);
-        } finally {
             setLoading(false);
         }
-    }
+    };
+
+    // Hardcoded options since Enums are types only
+    const ROLES = ["SDE1", "Product Manager", "Marketing Manager"];
 
     return (
-        <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 text-zinc-50 p-4">
-            <div className="w-full max-w-md space-y-8 bg-zinc-900 p-8 rounded-xl border border-zinc-800">
-                <div className="text-center">
-                    <h2 className="text-3xl font-bold">Setup Interview</h2>
-                    <p className="text-zinc-400 mt-2">Upload your resume and configure settings</p>
+        <div className="flex min-h-screen items-center justify-center p-4">
+            <GlassCard className="w-full max-w-lg p-8 relative">
+                <div className="text-center mb-8">
+                    <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400 mb-2">
+                        Configure Session
+                    </h1>
+                    <div className="flex justify-center space-x-2 mt-4">
+                        {[1, 2, 3].map((i) => (
+                            <div
+                                key={i}
+                                className={`h-1.5 w-12 rounded-full transition-colors duration-300 ${step >= i ? "bg-blue-500" : "bg-zinc-800"}`}
+                            />
+                        ))}
+                    </div>
                 </div>
 
-                {error && (
-                    <div className="p-3 rounded bg-red-900/50 text-red-200 text-sm border border-red-900">
-                        {error}
-                    </div>
-                )}
+                <AnimatePresence mode="wait">
+                    {step === 1 && (
+                        <motion.div
+                            key="step1"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            className="space-y-6"
+                        >
+                            <div className="space-y-3">
+                                <label className="text-sm text-zinc-400 font-medium">Target Role</label>
+                                <div className="grid grid-cols-1 gap-2">
+                                    {ROLES.map((r) => (
+                                        <div
+                                            key={r}
+                                            onClick={() => setRole(r as RoleEnum)}
+                                            className={`p-3 rounded-lg border cursor-pointer flex items-center transition-all ${role === r ? "bg-blue-500/20 border-blue-500 text-blue-200" : "bg-zinc-900/50 border-white/5 hover:border-white/20"}`}
+                                        >
+                                            <User className="w-4 h-4 mr-3 opacity-70" />
+                                            {r}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
 
-                <form onSubmit={handleSubmit} className="space-y-6">
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Target Role</label>
-                        <select name="role" className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 focus:ring-1 ring-blue-500 outline-none">
-                            <option value="SDE1">Software Development Engineer I (SDE1)</option>
-                            <option value="Product Manager">Product Manager</option>
-                            <option value="Marketing Manager">Marketing Manager</option>
-                        </select>
-                    </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm text-zinc-400 font-medium">Difficulty</label>
+                                    <select
+                                        value={difficulty}
+                                        onChange={(e) => setDifficulty(e.target.value as DifficultyEnum)}
+                                        className="w-full p-2.5 rounded-lg bg-zinc-900/50 border border-white/10 outline-none focus:border-blue-500"
+                                    >
+                                        <option value="Easy">Easy</option>
+                                        <option value="Medium">Medium</option>
+                                        <option value="Hard">Hard</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm text-zinc-400 font-medium">Questions</label>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={10}
+                                        value={numQuestions}
+                                        onChange={(e) => setNumQuestions(parseInt(e.target.value))}
+                                        className="w-full p-2.5 rounded-lg bg-zinc-900/50 border border-white/10 outline-none focus:border-blue-500"
+                                    />
+                                </div>
+                            </div>
 
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Difficulty</label>
-                        <select name="difficulty" className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 focus:ring-1 ring-blue-500 outline-none">
-                            <option value="Easy">Easy</option>
-                            <option value="Medium">Medium</option>
-                            <option value="Hard">Hard</option>
-                        </select>
-                    </div>
+                            <Button onClick={handleNext} className="w-full">Continue <ArrowRight className="ml-2 w-4 h-4" /></Button>
+                        </motion.div>
+                    )}
 
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Number of Questions</label>
-                        <input
-                            type="number"
-                            name="num_questions"
-                            defaultValue={5}
-                            min={1}
-                            max={10}
-                            className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 focus:ring-1 ring-blue-500 outline-none"
-                        />
-                    </div>
+                    {step === 2 && (
+                        <motion.div
+                            key="step2"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            className="space-y-6 text-center"
+                        >
+                            <div className="border-2 border-dashed border-zinc-700 rounded-xl p-8 transition-colors hover:border-blue-500/50 bg-zinc-900/20">
+                                <input
+                                    type="file"
+                                    id="resume"
+                                    accept=".pdf"
+                                    className="hidden"
+                                    onChange={(e) => setResume(e.target.files?.[0] || null)}
+                                />
+                                <label htmlFor="resume" className="cursor-pointer flex flex-col items-center">
+                                    {resume ? <CheckCircle2 className="w-12 h-12 text-green-500 mb-3" /> : <Upload className="w-12 h-12 text-zinc-500 mb-3" />}
+                                    <span className="text-lg font-medium">{resume ? resume.name : "Upload Resume (PDF)"}</span>
+                                    {!resume && <span className="text-zinc-500 text-sm mt-1">Click to browse files</span>}
+                                </label>
+                            </div>
 
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Resume (PDF)</label>
-                        <input
-                            type="file"
-                            name="resume"
-                            accept=".pdf"
-                            className="w-full p-2 rounded bg-zinc-800 border border-zinc-700 text-sm text-zinc-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700"
-                        />
-                    </div>
+                            <div className="flex gap-3">
+                                <Button variant="ghost" onClick={handlePrev} className="flex-1">Back</Button>
+                                <Button onClick={handleNext} disabled={!resume} className="flex-1">Continue</Button>
+                            </div>
+                        </motion.div>
+                    )}
 
-                    <div className="flex items-center space-x-2 pt-2">
-                        <input type="checkbox" name="voice_enabled" id="voice" className="w-4 h-4 rounded" />
-                        <label htmlFor="voice" className="text-sm font-medium cursor-pointer">Enable Voice Mode (Beta)</label>
-                    </div>
+                    {step === 3 && (
+                        <motion.div
+                            key="step3"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            className="space-y-6"
+                        >
+                            <div className="bg-zinc-900/40 rounded-xl p-4 border border-white/5 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-lg ${voiceEnabled ? "bg-blue-500/20 text-blue-400" : "bg-zinc-800 text-zinc-400"}`}>
+                                            <Mic className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <div className="font-medium">Voice Mode</div>
+                                            <div className="text-xs text-zinc-500">Enable speech interaction</div>
+                                        </div>
+                                    </div>
+                                    <input
+                                        type="checkbox"
+                                        checked={voiceEnabled}
+                                        onChange={(e) => setVoiceEnabled(e.target.checked)}
+                                        className="w-5 h-5"
+                                    />
+                                </div>
+                            </div>
 
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {loading ? "Analyzing Resume..." : "Start Interview"}
-                    </button>
-                </form>
-            </div>
+                            {error && <p className="text-red-400 text-center text-sm">{error}</p>}
+
+                            <div className="flex gap-3 pt-4">
+                                <Button variant="ghost" onClick={handlePrev} disabled={loading} className="flex-1">Back</Button>
+                                <Button onClick={handleSubmit} disabled={loading} className="flex-1 bg-gradient-to-r from-blue-600 to-purple-600 hover:opacity-90 border-0">
+                                    {loading ? "Analyzing..." : "Start Interview"}
+                                </Button>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+            </GlassCard>
         </div>
     );
 }
